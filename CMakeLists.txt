@@ -230,6 +230,7 @@ list(APPEND NGP_SOURCES
 	src/tinyexr_wrapper.cu
 	src/tinyobj_loader_wrapper.cpp
 	src/triangle_bvh.cu
+	src/unity.cu
 )
 
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
@@ -283,6 +284,7 @@ if (NGP_OPTIX)
 	list(APPEND NGP_SOURCES ${OPTIX_PTX_HEADER})
 endif()
 
+# add_library(ngp STATIC ${NGP_SOURCES})
 add_library(ngp STATIC ${NGP_SOURCES})
 set_target_properties(ngp PROPERTIES CUDA_RESOLVE_DEVICE_SYMBOLS ON CUDA_SEPARABLE_COMPILATION ON)
 target_compile_definitions(ngp PUBLIC ${NGP_DEFINITIONS})
@@ -290,6 +292,14 @@ target_compile_options(ngp PUBLIC $<$<COMPILE_LANGUAGE:CUDA>:${CUDA_NVCC_FLAGS}>
 target_include_directories(ngp PUBLIC ${NGP_INCLUDE_DIRECTORIES})
 target_link_directories(ngp PUBLIC ${NGP_LINK_DIRECTORIES})
 target_link_libraries(ngp PUBLIC ${NGP_LIBRARIES} tiny-cuda-nn)
+
+add_library(ngp_shared SHARED ${NGP_SOURCES})
+set_target_properties(ngp_shared PROPERTIES CUDA_RESOLVE_DEVICE_SYMBOLS ON CUDA_SEPARABLE_COMPILATION ON)
+target_compile_definitions(ngp_shared PUBLIC ${NGP_DEFINITIONS})
+target_compile_options(ngp_shared PUBLIC $<$<COMPILE_LANGUAGE:CUDA>:${CUDA_NVCC_FLAGS}>)
+target_include_directories(ngp_shared PUBLIC ${NGP_INCLUDE_DIRECTORIES})
+target_link_directories(ngp_shared PUBLIC ${NGP_LINK_DIRECTORIES})
+target_link_libraries(ngp_shared PUBLIC ${NGP_LIBRARIES} tiny-cuda-nn)
 
 add_executable(testbed src/main.cu)
 target_link_libraries(testbed PRIVATE ngp)
