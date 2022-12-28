@@ -1,4 +1,4 @@
-#include "neural-graphics-primitives/unity.h"
+#include "neural-graphics-primitives/exported_functions.h"
 
 #ifdef _WIN32
 #  include <GL/gl3w.h>
@@ -42,7 +42,8 @@
 using Texture = std::shared_ptr<ngp::GLTexture>;
 using RenderBuffer = std::shared_ptr<ngp::CudaRenderBuffer>;
 
-struct TextureData {
+struct TextureData 
+{
     TextureData(const Texture& tex, const RenderBuffer& buf, int width, int heigth)
     : surface_texture(tex), render_buffer(buf), width(width), height(height) {
     }
@@ -55,11 +56,12 @@ struct TextureData {
 
 static bool already_initalized = false;
 static bool use_dlss = false;
-static UnityTextureID nullHandle;
+static uint32_t nullHandle;
 static std::shared_ptr<ngp::Testbed> testbed = nullptr;
 static std::unordered_map<GLuint, std::shared_ptr<TextureData>> textures;
 
-extern "C" void unity_nerf_initialize(const char* scene, const char* snapshot, bool dlss) { 
+extern "C" void nerf_initialize(const char* scene, const char* snapshot, bool dlss)
+{ 
     if (already_initalized) {
         std::cout << "Already initalized nerf" << std::endl;
         return;
@@ -98,7 +100,8 @@ extern "C" void unity_nerf_initialize(const char* scene, const char* snapshot, b
 #endif
 }
 
-extern "C" void unity_nerf_deinitialize() {
+extern "C" void nerf_deinitialize()
+{
     
 #ifdef NGP_VULKAN    
     if (use_dlss) { 
@@ -110,7 +113,8 @@ extern "C" void unity_nerf_deinitialize() {
     glfwTerminate();
 }
 
-extern "C" UnityTextureID unity_nerf_create_texture(int width, int height) {
+extern "C" unsigned int nerf_create_texture(int width, int height)
+{
     if (!testbed)
         return 0;
 
@@ -142,8 +146,6 @@ extern "C" UnityTextureID unity_nerf_create_texture(int width, int height) {
     buffer->resize(render_res);
 
     GLuint handle = texture->texture();
-    // int* handle_ptr = new int;
-    // *handle_ptr = static_cast<int>(handle);
 
     textures[texture->texture()] = std::make_shared<TextureData>(
         texture,
@@ -152,16 +154,14 @@ extern "C" UnityTextureID unity_nerf_create_texture(int width, int height) {
         height
     );
 
-    // return the opengl texture handle
-    // But unity fails to find the functions otherwise :/
     return handle;
 }
 
-extern "C" void unity_nerf_update_texture(float* camera_matrix, UnityTextureID handle) {
+extern "C" void nerf_update_texture(float* camera_matrix, unsigned int handle) 
+{
     if (!testbed)
         return;
 
-    // GLuint handle = static_cast<GLuint>(*handle_ptr);
     auto found = textures.find(handle);
     if (found == std::end(textures)) {
         return;
@@ -171,14 +171,15 @@ extern "C" void unity_nerf_update_texture(float* camera_matrix, UnityTextureID h
 
     RenderBuffer render_buffer = found->second->render_buffer;
     render_buffer->reset_accumulation();
-    testbed->render_frame(camera,//testbed->m_camera,
-                          camera,//testbed->m_camera,
+    testbed->render_frame(camera,
+                          camera,
                           Eigen::Vector4f::Zero(),
                           *render_buffer.get(),
                           true);
 }
 
-extern "C" void unity_nerf_update_aabb_crop(float* min_vec, float* max_vec){
+extern "C" void nerf_update_aabb_crop(float* min_vec, float* max_vec)
+{
     if (!testbed)
     return;
 
@@ -189,7 +190,8 @@ extern "C" void unity_nerf_update_aabb_crop(float* min_vec, float* max_vec){
     
 }
 
-extern "C" void unity_nerf_destroy_texture(UnityTextureID handle) {
+extern "C" void nerf_destroy_texture(unsigned int handle)
+{
     if (!testbed)
         return;
 
@@ -204,13 +206,13 @@ extern "C" void unity_nerf_destroy_texture(UnityTextureID handle) {
     found->second->render_buffer.reset();
 
     found->second.reset();
-    // delete handle_ptr;
 }
 
 
 // utility functions
 
-extern "C" void unity_nerf_reset_camera(){
+extern "C" void nerf_reset_camera()
+{
     if (!testbed)
     return;
     testbed->reset_camera();
