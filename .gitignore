@@ -1,12 +1,16 @@
 /.vscode
 /.vs
 /build*
+/external
 /figures
 /out
 /results
 /tmp
 /venv
 /video
+/instant-ngp
+/*.dll
+/*.exe
 /*.json
 *.msgpack
 *.training

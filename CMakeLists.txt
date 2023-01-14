@@ -10,7 +10,7 @@ cmake_minimum_required(VERSION 3.18)
 
 project(instant-ngp
 	VERSION 1.0
-	DESCRIPTION "Instant neural graphics primitives"
+	DESCRIPTION "Instant Neural Graphics Primitives"
 	LANGUAGES C CXX CUDA
 )
 set(NGP_VERSION "${CMAKE_PROJECT_VERSION}")
@@ -69,7 +69,7 @@ set(CUDA_LINK_LIBRARIES_KEYWORD PUBLIC)
 set(CMAKE_CUDA_RUNTIME_LIBRARY Shared)
 
 if (MSVC)
-	list(APPEND CUDA_NVCC_FLAGS "-Xcompiler=-bigobj")
+	list(APPEND CUDA_NVCC_FLAGS "-Xcompiler=/bigobj")
 else()
 	list(APPEND CUDA_NVCC_FLAGS "-Xcompiler=-mf16c")
 	list(APPEND CUDA_NVCC_FLAGS "-Xcompiler=-Wno-float-conversion")
@@ -85,6 +85,7 @@ list(APPEND CUDA_NVCC_FLAGS "--expt-relaxed-constexpr")
 
 set(TCNN_BUILD_BENCHMARK OFF)
 set(TCNN_BUILD_EXAMPLES OFF)
+set(TCNN_ALLOW_CUBLAS_CUSOLVER OFF)
 add_subdirectory(dependencies/tiny-cuda-nn)
 
 set(CMAKE_CUDA_ARCHITECTURES ${TCNN_CUDA_ARCHITECTURES})
@@ -116,8 +117,8 @@ if (NGP_BUILD_WITH_GUI)
 		set(NGP_VULKAN OFF)
 		if (NGP_BUILD_WITH_VULKAN)
 			message(WARNING
-				"Vulkan was not found. Neural graphics primitives will still compile "
-				"and run correctly, but DLSS will not be supported."
+				"Vulkan was not found. Instant neural graphics primitives will still "
+				"compile and run correctly, but DLSS will not be supported."
 			)
 		endif()
 	endif()
@@ -181,22 +182,10 @@ if (OPENMP_FOUND)
 	set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${OpenMP_CXX_FLAGS}")
 endif()
 
-find_package(OptiX)
-# set OptiX_INSTALL_DIR via your environment if it's not found automatically
-
-if ((OptiX_FOUND OR OptiX_INCLUDE) AND NGP_BUILD_WITH_OPTIX)
+if (NGP_BUILD_WITH_OPTIX)
 	set(NGP_OPTIX ON)
-	list(APPEND NGP_INCLUDE_DIRECTORIES "${OptiX_INCLUDE}")
+	list(APPEND NGP_INCLUDE_DIRECTORIES "dependencies/optix")
 	list(APPEND NGP_DEFINITIONS -DNGP_OPTIX)
-else()
-	set(NGP_OPTIX OFF)
-	if (NGP_BUILD_WITH_OPTIX)
-		message(WARNING
-			"OptiX was not found. Neural graphics primitives will still compile "
-			"and run correctly. However, SDF training in 'raystab' and 'pathescape' "
-			"modes will be significantly slower."
-		)
-	endif()
 endif()
 
 find_package(Python 3.7 COMPONENTS Interpreter Development)
@@ -217,6 +206,7 @@ endif()
 list(APPEND NGP_SOURCES
 	${GUI_SOURCES}
 	src/camera_path.cu
+	src/common.cu
 	src/common_device.cu
 	src/marching_cubes.cu
 	src/nerf_loader.cu
@@ -291,8 +281,8 @@ target_include_directories(ngp PUBLIC ${NGP_INCLUDE_DIRECTORIES})
 target_link_directories(ngp PUBLIC ${NGP_LINK_DIRECTORIES})
 target_link_libraries(ngp PUBLIC ${NGP_LIBRARIES} tiny-cuda-nn)
 
-add_executable(testbed src/main.cu)
-target_link_libraries(testbed PRIVATE ngp)
+add_executable(instant-ngp src/main.cu)
+target_link_libraries(instant-ngp PRIVATE ngp)
 
 # Copy DLSS shared libraries
 if (NGP_VULKAN)
@@ -303,14 +293,25 @@ if (NGP_VULKAN)
 	endif()
 
 	if (MSVC)
-		add_custom_command(TARGET testbed POST_BUILD
-			COMMAND ${CMAKE_COMMAND} -E copy "${CMAKE_CURRENT_SOURCE_DIR}/dependencies/dlss/lib/Windows_x86_64/${NGX_BUILD_DIR}/nvngx_dlss.dll" $<TARGET_FILE_DIR:testbed>
+		add_custom_command(TARGET instant-ngp POST_BUILD
+			COMMAND ${CMAKE_COMMAND} -E copy "${CMAKE_CURRENT_SOURCE_DIR}/dependencies/dlss/lib/Windows_x86_64/${NGX_BUILD_DIR}/nvngx_dlss.dll" $<TARGET_FILE_DIR:instant-ngp>
 			COMMAND_EXPAND_LISTS
 		)
 	else()
 		file(GLOB DLSS_SOS "${CMAKE_CURRENT_SOURCE_DIR}/dependencies/dlss/lib/Linux_x86_64/${NGX_BUILD_DIR}/libnvidia-ngx-dlss.so.*")
-		add_custom_command(TARGET testbed POST_BUILD
-			COMMAND ${CMAKE_COMMAND} -E copy ${DLSS_SOS} $<TARGET_FILE_DIR:testbed>
+		add_custom_command(TARGET instant-ngp POST_BUILD
+			COMMAND ${CMAKE_COMMAND} -E copy ${DLSS_SOS} $<TARGET_FILE_DIR:instant-ngp>
+			COMMAND_EXPAND_LISTS
+		)
+	endif()
+endif()
+
+if (MSVC)
+	# Copy CUDA runtime DLLs to the build directory so that Python can find them.
+	file(GLOB CUDA_DLLS "${CUDA_COMPILER_BIN}/cudart64*.dll")
+	if (CUDA_DLLS)
+		add_custom_command(TARGET instant-ngp POST_BUILD
+			COMMAND ${CMAKE_COMMAND} -E copy ${CUDA_DLLS} $<TARGET_FILE_DIR:instant-ngp>
 			COMMAND_EXPAND_LISTS
 		)
 	endif()
@@ -323,15 +324,20 @@ if (Python_FOUND)
 	target_link_libraries(pyngp PRIVATE ngp PUBLIC ${PYTHON_LIBRARIES} pybind11::module)
 	target_compile_definitions(pyngp PUBLIC -DNGP_PYTHON)
 	pybind11_extension(pyngp)
+endif()
 
-	if (MSVC)
-		# Copy dlls needed at runtime
-		file(GLOB CUDA_DLLS "${CUDA_COMPILER_BIN}/cublas*.dll" "${CUDA_COMPILER_BIN}/cudart64*.dll" "${CUDA_COMPILER_BIN}/cusolver64*.dll")
-		if (CUDA_DLLS)
-			add_custom_command(TARGET pyngp POST_BUILD
-				COMMAND ${CMAKE_COMMAND} -E copy ${CUDA_DLLS} $<TARGET_FILE_DIR:pyngp>
-				COMMAND_EXPAND_LISTS
-			)
-		endif()
+# Link the executable to the project directory and copy over DLLs such that instant-ngp can be invoked without going into the build folder.
+set(NGP_BINARY_FILE "\"${CMAKE_CURRENT_SOURCE_DIR}/$<TARGET_FILE_NAME:instant-ngp>\"")
+if (MSVC)
+	file(TO_NATIVE_PATH ${NGP_BINARY_FILE} NGP_BINARY_FILE)
+	add_custom_command(TARGET instant-ngp POST_BUILD COMMAND cmd /C del /F /Q "${NGP_BINARY_FILE}" && cmd /C mklink /H "${NGP_BINARY_FILE}" "\"$<TARGET_FILE:instant-ngp>\"")
+	file(GLOB NGP_REQUIRED_DLLS "${CUDA_COMPILER_BIN}/cudart64*.dll" "${CMAKE_CURRENT_SOURCE_DIR}/dependencies/dlss/lib/Windows_x86_64/${NGX_BUILD_DIR}/nvngx_dlss.dll")
+	if (NGP_REQUIRED_DLLS)
+		add_custom_command(TARGET instant-ngp POST_BUILD
+			COMMAND ${CMAKE_COMMAND} -E copy ${NGP_REQUIRED_DLLS} ${CMAKE_CURRENT_SOURCE_DIR}
+			COMMAND_EXPAND_LISTS
+		)
 	endif()
+else()
+	add_custom_command(TARGET instant-ngp POST_BUILD COMMAND ${CMAKE_COMMAND} -E create_symlink $<TARGET_FILE:instant-ngp> "${NGP_BINARY_FILE}")
 endif()
