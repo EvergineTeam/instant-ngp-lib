@@ -174,20 +174,6 @@ void GLTexture::resize(const Vector2i& new_size, int n_channels, bool is_8bit) {
 	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
 }
 
-static bool is_wsl() {
-#ifdef _WIN32
-	return false;
-#else
-	fs::path path = "/proc/sys/kernel/osrelease";
-	if (!path.exists()) {
-		return false;
-	}
-
-	std::ifstream f{path.str()};
-	std::string content((std::istreambuf_iterator<char>(f)), (std::istreambuf_iterator<char>()));
-	return content.find("microsoft") != std::string::npos;
-#endif
-}
 
 GLTexture::CUDAMapping::CUDAMapping(GLuint texture_id, const Vector2i& size) : m_size{size} {
 	static bool s_is_cuda_interop_supported = !is_wsl();
@@ -741,12 +727,15 @@ void CudaRenderBuffer::overlay_false_color(Vector2i training_resolution, bool to
 	);
 }
 
-void CudaRenderBuffer::enable_dlss(const Eigen::Vector2i& out_res) {
+void CudaRenderBuffer::enable_dlss(const Eigen::Vector2i& max_out_res) {
 #ifdef NGP_VULKAN
-	if (!m_dlss || m_dlss->out_resolution() != out_res) {
-		m_dlss = dlss_init(out_res);
+	if (!m_dlss || m_dlss->max_out_resolution() != max_out_res) {
+		m_dlss = dlss_init(max_out_res);
 	}
-	resize(in_resolution());
+
+	if (m_dlss) {
+		resize(m_dlss->clamp_resolution(in_resolution()));
+	}
 #else
 	throw std::runtime_error{"NGP was compiled without Vulkan/NGX/DLSS support."};
 #endif

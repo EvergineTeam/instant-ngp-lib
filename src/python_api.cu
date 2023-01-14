@@ -132,6 +132,7 @@ py::array_t<float> Testbed::render_to_cpu(int width, int height, int spp, bool l
 	if (end_time < 0.f) {
 		end_time = start_time;
 	}
+
 	bool path_animation_enabled = start_time >= 0.f;
 	if (!path_animation_enabled) { // the old code disabled camera smoothing for non-path renders; so we preserve that behaviour
 		m_smoothed_camera = m_camera;
@@ -146,6 +147,7 @@ py::array_t<float> Testbed::render_to_cpu(int width, int height, int spp, bool l
 		set_camera_from_time(start_time);
 		m_smoothed_camera = m_camera;
 	}
+
 	auto start_cam_matrix = m_smoothed_camera;
 
 	// now set up the end-of-frame camera matrix if we are moving along a path
@@ -153,14 +155,15 @@ py::array_t<float> Testbed::render_to_cpu(int width, int height, int spp, bool l
 		set_camera_from_time(end_time);
 		apply_camera_smoothing(1000.f / fps);
 	}
+
 	auto end_cam_matrix = m_smoothed_camera;
 
 	for (int i = 0; i < spp; ++i) {
 		float start_alpha = ((float)i)/(float)spp * shutter_fraction;
 		float end_alpha = ((float)i + 1.0f)/(float)spp * shutter_fraction;
 
-		auto sample_start_cam_matrix = log_space_lerp(start_cam_matrix, end_cam_matrix, start_alpha);
-		auto sample_end_cam_matrix = log_space_lerp(start_cam_matrix, end_cam_matrix, end_alpha);
+		auto sample_start_cam_matrix = start_cam_matrix;
+		auto sample_end_cam_matrix = log_space_lerp(start_cam_matrix, end_cam_matrix, shutter_fraction);
 
 		if (path_animation_enabled) {
 			set_camera_from_time(start_time + (end_time-start_time) * (start_alpha + end_alpha) / 2.0f);
@@ -184,21 +187,6 @@ py::array_t<float> Testbed::render_to_cpu(int width, int height, int spp, bool l
 	return result;
 }
 
-py::array_t<float> Testbed::render_with_rolling_shutter_to_cpu(const Eigen::Matrix<float, 3, 4>& camera_transform_start, const Eigen::Matrix<float, 3, 4>& camera_transform_end, const Eigen::Vector4f& rolling_shutter, int width, int height, int spp, bool linear) {
-	m_windowless_render_surface.resize({width, height});
-	m_windowless_render_surface.reset_accumulation();
-	for (int i = 0; i < spp; ++i) {
-		if (m_autofocus) {
-			autofocus();
-		}
-		render_frame(m_nerf.training.dataset.nerf_matrix_to_ngp(camera_transform_start), m_nerf.training.dataset.nerf_matrix_to_ngp(camera_transform_end), rolling_shutter, m_windowless_render_surface, !linear);
-	}
-	py::array_t<float> result({height, width, 4});
-	py::buffer_info buf = result.request();
-	CUDA_CHECK_THROW(cudaMemcpy2DFromArray(buf.ptr, width * sizeof(float) * 4, m_windowless_render_surface.surface_provider().array(), 0, 0, width * sizeof(float) * 4, height, cudaMemcpyDeviceToHost));
-	return result;
-}
-
 #ifdef NGP_GUI
 py::array_t<float> Testbed::screenshot(bool linear) const {
 	std::vector<float> tmp(m_window_res.prod() * 4);
@@ -209,8 +197,7 @@ py::array_t<float> Testbed::screenshot(bool linear) const {
 	float* data = (float*)buf.ptr;
 
 	// Linear, alpha premultiplied, Y flipped
-	ThreadPool pool;
-	pool.parallelFor<size_t>(0, m_window_res.y(), [&](size_t y) {
+	ThreadPool{}.parallel_for<size_t>(0, m_window_res.y(), [&](size_t y) {
 		size_t base = y * m_window_res.x();
 		size_t base_reverse = (m_window_res.y() - y - 1) * m_window_res.x();
 		for (uint32_t x = 0; x < m_window_res.x(); ++x) {
@@ -237,7 +224,11 @@ PYBIND11_MODULE(pyngp, m) {
 		.value("Sdf", ETestbedMode::Sdf)
 		.value("Image", ETestbedMode::Image)
 		.value("Volume", ETestbedMode::Volume)
+		.value("None", ETestbedMode::None)
 		.export_values();
+
+	m.def("mode_from_scene", &mode_from_scene);
+	m.def("mode_from_string", &mode_from_string);
 
 	py::enum_<EGroundTruthRenderMode>(m, "GroundTruthRenderMode")
 		.value("Shade", EGroundTruthRenderMode::Shade)
@@ -311,6 +302,7 @@ PYBIND11_MODULE(pyngp, m) {
 		.value("OpenCV", ELensMode::OpenCV)
 		.value("FTheta", ELensMode::FTheta)
 		.value("LatLong", ELensMode::LatLong)
+		.value("OpenCVFisheye", ELensMode::OpenCVFisheye)
 		.export_values();
 
 	py::class_<BoundingBox>(m, "BoundingBox")
@@ -336,9 +328,10 @@ PYBIND11_MODULE(pyngp, m) {
 
 	py::class_<Testbed> testbed(m, "Testbed");
 	testbed
-		.def(py::init<ETestbedMode>())
+		.def(py::init<ETestbedMode>(), py::arg("mode") = ETestbedMode::None)
 		.def(py::init<ETestbedMode, const std::string&, const std::string&>())
 		.def(py::init<ETestbedMode, const std::string&, const json&>())
+		.def_readonly("mode", &Testbed::m_testbed_mode)
 		.def("create_empty_nerf_dataset", &Testbed::create_empty_nerf_dataset, "Allocate memory for a nerf dataset with a given size", py::arg("n_images"), py::arg("aabb_scale")=1, py::arg("is_hdr")=false)
 		.def("load_training_data", &Testbed::load_training_data, py::call_guard<py::gil_scoped_release>(), "Load training data from a given path.")
 		.def("clear_training_data", &Testbed::clear_training_data, "Clears training data to free up GPU memory.")
@@ -371,15 +364,6 @@ PYBIND11_MODULE(pyngp, m) {
 			py::arg("fps") = 30.f,
 			py::arg("shutter_fraction") = 1.0f
 		)
-		.def("render_with_rolling_shutter", &Testbed::render_with_rolling_shutter_to_cpu, "Renders an image at the requested resolution. Does not require a window. Supports rolling shutter, with per ray time being computed as A+B*u+C*v+D*t for [A,B,C,D]",
-			py::arg("transform_matrix_start"),
-			py::arg("transform_matrix_end"),
-			py::arg("rolling_shutter") = Eigen::Vector4f::Zero(),
-			py::arg("width") = 1920,
-			py::arg("height") = 1080,
-			py::arg("spp") = 1,
-			py::arg("linear") = true
-		)
 		.def("destroy_window", &Testbed::destroy_window, "Destroy the window again.")
 		.def("train", &Testbed::train, py::call_guard<py::gil_scoped_release>(), "Perform a specified number of training steps.")
 		.def("reset", &Testbed::reset_network, py::arg("reset_density_grid") = true, "Reset training.")
@@ -404,6 +388,7 @@ PYBIND11_MODULE(pyngp, m) {
 		.def("save_snapshot", &Testbed::save_snapshot, py::arg("path"), py::arg("include_optimizer_state")=false, "Save a snapshot of the currently trained model")
 		.def("load_snapshot", &Testbed::load_snapshot, py::arg("path"), "Load a previously saved snapshot")
 		.def("load_camera_path", &Testbed::load_camera_path, "Load a camera path", py::arg("path"))
+		.def("load_file", &Testbed::load_file, "Load a file and automatically determine how to handle it. Can be a snapshot, dataset, network config, or camera path.", py::arg("path"))
 		.def_property("loop_animation", &Testbed::loop_animation, &Testbed::set_loop_animation)
 		.def("compute_and_save_png_slices", &Testbed::compute_and_save_png_slices,
 			py::arg("filename"),
@@ -434,10 +419,7 @@ PYBIND11_MODULE(pyngp, m) {
 			"`thresh` is the density threshold; use 0 for SDF; 2.5 works well for NeRF. "
 			"If the aabb parameter specifies an inside-out (\"empty\") box (default), the current render_aabb bounding box is used."
 		)
-		;
-
-	// Interesting members.
-	testbed
+		// Interesting members.
 		.def_readwrite("dynamic_res", &Testbed::m_dynamic_res)
 		.def_readwrite("dynamic_res_target_fps", &Testbed::m_dynamic_res_target_fps)
 		.def_readwrite("fixed_res_factor", &Testbed::m_fixed_res_factor)
@@ -491,7 +473,10 @@ PYBIND11_MODULE(pyngp, m) {
 		.def_readonly("sdf", &Testbed::m_sdf)
 		.def_readonly("image", &Testbed::m_image)
 		.def_readwrite("camera_smoothing", &Testbed::m_camera_smoothing)
-		.def_readwrite("display_gui", &Testbed::m_imgui_enabled)
+		.def_property("display_gui",
+			[](py::object& obj) { return obj.cast<Testbed&>().m_imgui.enabled; },
+			[](const py::object& obj, bool value) { obj.cast<Testbed&>().m_imgui.enabled = value; }
+		)
 		.def_readwrite("visualize_unit_cube", &Testbed::m_visualize_unit_cube)
 		.def_readwrite("snap_to_pixel_centers", &Testbed::m_snap_to_pixel_centers)
 		.def_readwrite("parallax_shift", &Testbed::m_parallax_shift)
@@ -619,6 +604,8 @@ PYBIND11_MODULE(pyngp, m) {
 			py::arg("cx")=-0.5f, py::arg("cy")=-0.5f,
 			py::arg("k1")=0.f, py::arg("k2")=0.f,
 			py::arg("p1")=0.f, py::arg("p2")=0.f,
+			py::arg("k3")=0.f, py::arg("k4")=0.f,
+			py::arg("is_fisheye")=false,
 			"Set up the camera intrinsics for the given training image index."
 		)
 		.def("set_camera_extrinsics", &Testbed::Nerf::Training::set_camera_extrinsics,

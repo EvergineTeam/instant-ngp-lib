@@ -50,10 +50,26 @@
 	#define NGP_PRAGMA_NO_UNROLL
 #endif
 
+#include <filesystem/path.h>
+
 #include <chrono>
 #include <functional>
 
+#if defined(__NVCC__) || (defined(__clang__) && defined(__CUDA__))
+#define NGP_HOST_DEVICE __host__ __device__
+#else
+#define NGP_HOST_DEVICE
+#endif
+
 NGP_NAMESPACE_BEGIN
+
+bool is_wsl();
+
+filesystem::path get_executable_dir();
+filesystem::path get_root_dir();
+
+bool ends_with(const std::string& str, const std::string& ending);
+bool ends_with_case_insensitive(const std::string& str, const std::string& ending);
 
 using Vector2i32 = Eigen::Matrix<uint32_t, 2, 1>;
 using Vector3i16 = Eigen::Matrix<uint16_t, 3, 1>;
@@ -155,7 +171,12 @@ enum class ETestbedMode : int {
 	Sdf,
 	Image,
 	Volume,
+	None,
 };
+
+ETestbedMode mode_from_scene(const std::string& scene);
+ETestbedMode mode_from_string(const std::string& str);
+std::string to_string(ETestbedMode);
 
 enum class ESDFGroundTruthMode : int {
 	RaytracedMesh,
@@ -166,6 +187,28 @@ enum class ESDFGroundTruthMode : int {
 struct Ray {
 	Eigen::Vector3f o;
 	Eigen::Vector3f d;
+
+	NGP_HOST_DEVICE Eigen::Vector3f operator()(float t) const {
+		return o + t * d;
+	}
+
+	NGP_HOST_DEVICE void advance(float t) {
+		o += d * t;
+	}
+
+	NGP_HOST_DEVICE float distance_to(const Eigen::Vector3f& p) const {
+		Eigen::Vector3f nearest = p - o;
+		nearest -= d * nearest.dot(d) / d.squaredNorm();
+		return nearest.norm();
+	}
+
+	NGP_HOST_DEVICE bool is_valid() const {
+		return d != Eigen::Vector3f::Zero();
+	}
+
+	static NGP_HOST_DEVICE Ray invalid() {
+		return {{0.0f, 0.0f, 0.0f}, {0.0f, 0.0f, 0.0f}};
+	}
 };
 
 struct TrainingXForm {
@@ -178,18 +221,14 @@ enum class ELensMode : int {
 	OpenCV,
 	FTheta,
 	LatLong,
+	OpenCVFisheye,
 };
+static constexpr const char* LensModeStr = "Perspective\0OpenCV\0F-Theta\0LatLong\0OpenCV Fisheye\0\0";
 
 struct Lens {
 	ELensMode mode = ELensMode::Perspective;
 	float params[7] = {};
 };
-
-#if defined(__NVCC__) || (defined(__clang__) && defined(__CUDA__))
-#define NGP_HOST_DEVICE __host__ __device__
-#else
-#define NGP_HOST_DEVICE
-#endif
 
 inline NGP_HOST_DEVICE float sign(float x) {
 	return copysignf(1.0, x);

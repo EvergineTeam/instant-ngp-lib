@@ -23,6 +23,7 @@
 #include <neural-graphics-primitives/render_buffer.h>
 #include <neural-graphics-primitives/sdf.h>
 #include <neural-graphics-primitives/shared_queue.h>
+#include <neural-graphics-primitives/thread_pool.h>
 #include <neural-graphics-primitives/trainable_buffer.cuh>
 
 #include <tiny-cuda-nn/multi_stream.h>
@@ -61,20 +62,26 @@ class GLTexture;
 class Testbed {
 public:
 	EIGEN_MAKE_ALIGNED_OPERATOR_NEW
-	Testbed(ETestbedMode mode);
+	Testbed(ETestbedMode mode = ETestbedMode::None);
 	~Testbed();
 	Testbed(ETestbedMode mode, const std::string& data_path) : Testbed(mode) { load_training_data(data_path); }
 	Testbed(ETestbedMode mode, const std::string& data_path, const std::string& network_config_path) : Testbed(mode, data_path) { reload_network_from_file(network_config_path); }
 	Testbed(ETestbedMode mode, const std::string& data_path, const nlohmann::json& network_config) : Testbed(mode, data_path) { reload_network_from_json(network_config); }
+
+	bool clear_tmp_dir();
+	void update_imgui_paths();
 	void load_training_data(const std::string& data_path);
+	void reload_training_data();
 	void clear_training_data();
 
-	using distance_fun_t = std::function<void(uint32_t, const tcnn::GPUMemory<Eigen::Vector3f>&, tcnn::GPUMemory<float>&, cudaStream_t)>;
-	using normals_fun_t = std::function<void(uint32_t, const tcnn::GPUMemory<Eigen::Vector3f>&, tcnn::GPUMemory<Eigen::Vector3f>&, cudaStream_t)>;
+	void set_mode(ETestbedMode mode);
+
+	using distance_fun_t = std::function<void(uint32_t, const Eigen::Vector3f*, float*, cudaStream_t)>;
+	using normals_fun_t = std::function<void(uint32_t, const Eigen::Vector3f*, Eigen::Vector3f*, cudaStream_t)>;
 
 	class SphereTracer {
 	public:
-		SphereTracer() : m_hit_counter(1), m_alive_counter(1) {}
+		SphereTracer() {}
 
 		void init_rays_from_camera(
 			uint32_t spp,
@@ -111,7 +118,7 @@ public:
 			uint32_t n_octree_levels,
 			cudaStream_t stream
 		);
-		void enlarge(size_t n_elements);
+		void enlarge(size_t n_elements, cudaStream_t stream);
 		RaysSdfSoa& rays_hit() { return m_rays_hit; }
 		RaysSdfSoa& rays_init() { return m_rays[0];	}
 		uint32_t n_rays_initialized() const { return m_n_rays_initialized; }
@@ -120,16 +127,19 @@ public:
 	private:
 		RaysSdfSoa m_rays[2];
 		RaysSdfSoa m_rays_hit;
-		tcnn::GPUMemory<uint32_t> m_hit_counter;
-		tcnn::GPUMemory<uint32_t> m_alive_counter;
+		uint32_t* m_hit_counter;
+		uint32_t* m_alive_counter;
+
 		uint32_t m_n_rays_initialized = 0;
 		float m_shadow_sharpness = 2048.f;
 		bool m_trace_shadow_rays = false;
+
+		tcnn::GPUMemoryArena::Allocation m_scratch_alloc;
 	};
 
 	class NerfTracer {
 	public:
-		NerfTracer() : m_hit_counter(1), m_alive_counter(1) {}
+		NerfTracer() {}
 
 		void init_rays_from_camera(
 			uint32_t spp,
@@ -193,38 +203,36 @@ public:
 		RaysNerfSoa& rays_init() { return m_rays[0]; }
 		uint32_t n_rays_initialized() const { return m_n_rays_initialized; }
 
-		void clear() {
-			m_scratch_alloc = {};
-		}
-
 	private:
 		RaysNerfSoa m_rays[2];
 		RaysNerfSoa m_rays_hit;
 		precision_t* m_network_output;
 		float* m_network_input;
-		tcnn::GPUMemory<uint32_t> m_hit_counter;
-		tcnn::GPUMemory<uint32_t> m_alive_counter;
+		uint32_t* m_hit_counter;
+		uint32_t* m_alive_counter;
 		uint32_t m_n_rays_initialized = 0;
 		tcnn::GPUMemoryArena::Allocation m_scratch_alloc;
 	};
 
 	class FiniteDifferenceNormalsApproximator {
 	public:
-		void enlarge(uint32_t n_elements);
-		void normal(uint32_t n_elements, const distance_fun_t& distance_function, tcnn::GPUMemory<Eigen::Vector3f>& pos, tcnn::GPUMemory<Eigen::Vector3f>& normal, float epsilon, cudaStream_t stream);
+		void enlarge(uint32_t n_elements, cudaStream_t stream);
+		void normal(uint32_t n_elements, const distance_fun_t& distance_function, const Eigen::Vector3f* pos, Eigen::Vector3f* normal, float epsilon, cudaStream_t stream);
 
 	private:
-		tcnn::GPUMemory<Eigen::Vector3f> dx;
-		tcnn::GPUMemory<Eigen::Vector3f> dy;
-		tcnn::GPUMemory<Eigen::Vector3f> dz;
+		Eigen::Vector3f* dx;
+		Eigen::Vector3f* dy;
+		Eigen::Vector3f* dz;
 
-		tcnn::GPUMemory<float> dist_dx_pos;
-		tcnn::GPUMemory<float> dist_dy_pos;
-		tcnn::GPUMemory<float> dist_dz_pos;
+		float* dist_dx_pos;
+		float* dist_dy_pos;
+		float* dist_dz_pos;
 
-		tcnn::GPUMemory<float> dist_dx_neg;
-		tcnn::GPUMemory<float> dist_dy_neg;
-		tcnn::GPUMemory<float> dist_dz_neg;
+		float* dist_dx_neg;
+		float* dist_dy_neg;
+		float* dist_dz_neg;
+
+		tcnn::GPUMemoryArena::Allocation m_scratch_alloc;
 	};
 
 	struct LevelStats {
@@ -266,7 +274,7 @@ public:
 	);
 	void train_volume(size_t target_batch_size, bool get_loss_scalar, cudaStream_t stream);
 	void training_prep_volume(uint32_t batch_size, cudaStream_t stream) {}
-	void load_volume();
+	void load_volume(const filesystem::path& data_path);
 
 	void render_sdf(
 		const distance_fun_t& distance_function,
@@ -283,8 +291,9 @@ public:
 	void render_image(CudaRenderBuffer& render_buffer, cudaStream_t stream);
 	void render_frame(const Eigen::Matrix<float, 3, 4>& camera_matrix0, const Eigen::Matrix<float, 3, 4>& camera_matrix1, const Eigen::Vector4f& nerf_rolling_shutter, CudaRenderBuffer& render_buffer, bool to_srgb = true) ;
 	void visualize_nerf_cameras(ImDrawList* list, const Eigen::Matrix<float, 4, 4>& world2proj);
+	filesystem::path find_network_config(const filesystem::path& network_config_path);
 	nlohmann::json load_network_config(const filesystem::path& network_config_path);
-	void reload_network_from_file(const std::string& network_config_path);
+	void reload_network_from_file(const std::string& network_config_path = "");
 	void reload_network_from_json(const nlohmann::json& json, const std::string& config_base_path=""); // config_base_path is needed so that if the passed in json uses the 'parent' feature, we know where to look... be sure to use a filename, or if a directory, end with a trailing slash
 	void reset_accumulation(bool due_to_camera_movement = false, bool immediate_redraw = true);
 	void redraw_next_frame() {
@@ -294,9 +303,9 @@ public:
 	static ELossType string_to_loss_type(const std::string& str);
 	void reset_network(bool clear_density_grid = true);
 	void create_empty_nerf_dataset(size_t n_images, int aabb_scale = 1, bool is_hdr = false);
-	void load_nerf();
+	void load_nerf(const filesystem::path& data_path);
 	void load_nerf_post();
-	void load_mesh();
+	void load_mesh(const filesystem::path& data_path);
 	void set_exposure(float exposure) { m_exposure = exposure; }
 	void set_max_level(float maxlevel);
 	void set_min_level(float minlevel);
@@ -305,7 +314,7 @@ public:
 	void translate_camera(const Eigen::Vector3f& rel);
 	void mouse_drag(const Eigen::Vector2f& rel, int button);
 	void mouse_wheel(Eigen::Vector2f m, float delta);
-	void handle_file(const std::string& file);
+	void load_file(const std::string& file);
 	void set_nerf_camera_matrix(const Eigen::Matrix<float, 3, 4>& cam);
 	Eigen::Vector3f look_at() const;
 	void set_look_at(const Eigen::Vector3f& pos);
@@ -350,6 +359,7 @@ public:
 	template <typename T>
 	void dump_parameters_as_images(const T* params, const std::string& filename_base);
 
+	void prepare_next_camera_path_frame();
 	void imgui();
 	void training_prep_nerf(uint32_t batch_size, cudaStream_t stream);
 	void training_prep_sdf(uint32_t batch_size, cudaStream_t stream);
@@ -393,10 +403,10 @@ public:
 	void draw_gui();
 	bool frame();
 	bool want_repl();
-	void load_image();
-	void load_exr_image();
-	void load_stbi_image();
-	void load_binary_image();
+	void load_image(const filesystem::path& data_path);
+	void load_exr_image(const filesystem::path& data_path);
+	void load_stbi_image(const filesystem::path& data_path);
+	void load_binary_image(const filesystem::path& data_path);
 	uint32_t n_dimensions_to_visualize() const;
 	float fov() const ;
 	void set_fov(float val) ;
@@ -462,7 +472,7 @@ public:
 	bool m_training_data_available = false;
 	bool m_render = true;
 	int m_max_spp = 0;
-	ETestbedMode m_testbed_mode = ETestbedMode::Sdf;
+	ETestbedMode m_testbed_mode = ETestbedMode::None;
 	bool m_max_level_rand_training = false;
 
 	// Rendering stuff
@@ -519,6 +529,8 @@ public:
 	std::vector<std::shared_ptr<GLTexture>> m_render_textures;
 #endif
 
+	ThreadPool m_thread_pool;
+	std::vector<std::future<void>> m_render_futures;
 
 	std::vector<CudaRenderBuffer> m_render_surfaces;
 	std::unique_ptr<CudaRenderBuffer> m_pip_render_surface;
@@ -532,8 +544,6 @@ public:
 	bool m_gui_redraw = true;
 
 	struct Nerf {
-		NerfTracer tracer;
-
 		struct Training {
 			NerfDataset dataset;
 			int n_images_for_training = 0; // how many images to train from, as a high watermark compared to the dataset size
@@ -609,7 +619,7 @@ public:
 			uint32_t n_steps_since_error_map_update = 0;
 			uint32_t n_rays_since_error_map_update = 0;
 
-			float near_distance = 0.2f;
+			float near_distance = 0.1f;
 			float density_grid_decay = 0.95f;
 			default_rng_t density_grid_rng;
 			int view = 0;
@@ -618,7 +628,7 @@ public:
 
 			tcnn::GPUMemory<float> sharpness_grid;
 
-			void set_camera_intrinsics(int frame_idx, float fx, float fy = 0.0f, float cx = -0.5f, float cy = -0.5f, float k1 = 0.0f, float k2 = 0.0f, float p1 = 0.0f, float p2 = 0.0f);
+			void set_camera_intrinsics(int frame_idx, float fx, float fy = 0.0f, float cx = -0.5f, float cy = -0.5f, float k1 = 0.0f, float k2 = 0.0f, float p1 = 0.0f, float p2 = 0.0f, float k3 = 0.0f, float k4 = 0.0f, bool is_fisheye = false);
 			void set_camera_extrinsics_rolling_shutter(int frame_idx, Eigen::Matrix<float, 3, 4> camera_to_world_start, Eigen::Matrix<float, 3, 4> camera_to_world_end, const Eigen::Vector4f& rolling_shutter, bool convert_to_ngp = true);
 			void set_camera_extrinsics(int frame_idx, Eigen::Matrix<float, 3, 4> camera_to_world, bool convert_to_ngp = true);
 			Eigen::Matrix<float, 3, 4> get_camera_extrinsics(int frame_idx);
@@ -639,9 +649,6 @@ public:
 		uint32_t density_grid_ema_step = 0;
 
 		uint32_t max_cascade = 0;
-
-		tcnn::GPUMemory<float> vis_input;
-		tcnn::GPUMemory<Eigen::Array4f> vis_rgba;
 
 		ENerfActivation rgb_activation = ENerfActivation::Exponential;
 		ENerfActivation density_activation = ENerfActivation::Exponential;
@@ -666,8 +673,6 @@ public:
 	} m_nerf;
 
 	struct Sdf {
-		SphereTracer tracer;
-		SphereTracer shadow_tracer;
 		float shadow_sharpness = 2048.0f;
 		float maximum_distance = 0.00005f;
 		float fd_normals_epsilon = 0.0005f;
@@ -675,8 +680,6 @@ public:
 		ESDFGroundTruthMode groundtruth_mode = ESDFGroundTruthMode::RaytracedMesh;
 
 		BRDFParams brdf;
-
-		FiniteDifferenceNormalsApproximator fd_normals;
 
 		// Mesh data
 		EMeshSdfMode mesh_sdf_mode = EMeshSdfMode::Raystab;
@@ -764,7 +767,7 @@ public:
 		tcnn::GPUMemory<char> nanovdb_grid;
 		tcnn::GPUMemory<uint8_t> bitgrid;
 		float global_majorant = 1.f;
-		Eigen::Vector3f world2index_offset = {0,0,0};
+		Eigen::Vector3f world2index_offset = {0, 0, 0};
 		float world2index_scale = 1.f;
 
 		struct Training {
@@ -790,7 +793,7 @@ public:
 	float m_render_near_distance = 0.0f;
 	float m_slice_plane_z = 0.0f;
 	bool m_floor_enable = false;
-	inline float get_floor_y() const { return m_floor_enable ? m_aabb.min.y()+0.001f : -10000.f; }
+	inline float get_floor_y() const { return m_floor_enable ? m_aabb.min.y() + 0.001f : -10000.f; }
 	BoundingBox m_raw_aabb;
 	BoundingBox m_aabb;
 	BoundingBox m_render_aabb;
@@ -821,7 +824,17 @@ public:
 	bool m_single_view = true; // Whether a single neuron is visualized, or all in a tiled grid
 	float m_picture_in_picture_res = 0.f; // if non zero, requests a small second picture :)
 
-	bool m_imgui_enabled = true; // tab to toggle
+	struct ImGuiVars {
+		static const uint32_t MAX_PATH_LEN = 1024;
+
+		bool enabled = true; // tab to toggle
+		char cam_path_path[MAX_PATH_LEN] = "cam.json";
+		char extrinsics_path[MAX_PATH_LEN] = "extrinsics.json";
+		char mesh_path[MAX_PATH_LEN] = "base.obj";
+		char snapshot_path[MAX_PATH_LEN] = "base.msgpack";
+		char video_path[MAX_PATH_LEN] = "video.mp4";
+	} m_imgui;
+
 	bool m_visualize_unit_cube = false;
 	bool m_snap_to_pixel_centers = false;
 	bool m_edit_render_aabb = false;
@@ -852,7 +865,7 @@ public:
 	bool m_train_network = true;
 
 	filesystem::path m_data_path;
-	filesystem::path m_network_config_path;
+	filesystem::path m_network_config_path = "base.json";
 
 	nlohmann::json m_network_config;
 
