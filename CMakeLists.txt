@@ -291,8 +291,6 @@ target_include_directories(ngp_shared PUBLIC ${NGP_INCLUDE_DIRECTORIES})
 target_link_directories(ngp_shared PUBLIC ${NGP_LINK_DIRECTORIES})
 target_link_libraries(ngp_shared PUBLIC ${NGP_LIBRARIES} tiny-cuda-nn)
 
-add_executable(testbed src/main.cu)
-target_link_libraries(testbed PRIVATE ngp)
 add_executable(instant-ngp src/main.cu)
 target_link_libraries(instant-ngp PRIVATE ngp)
 
