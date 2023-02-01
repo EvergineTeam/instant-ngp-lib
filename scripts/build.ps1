@@ -25,7 +25,13 @@ conda activate instantngp
 # # 	Remove-Item "./build" -Force -Recurse
 # # }
 cmake . -DTCNN_CUDA_ARCHITECTURES=75 -B build
+if (-not $?) {
+	exit $LASTEXITCODE
+}
 cmake --build build --config RelWithDebInfo -j
+if (-not $?) {
+	exit $LASTEXITCODE
+}
 
 Copy-Item ./build/ngp_shared.dll $viewer_path/runtimes/win-x64/rtx2/native/
 Copy-Item ./build/ngp_shared.pdb $viewer_path/runtimes/win-x64/rtx2/native/
@@ -34,7 +40,13 @@ Copy-Item ./build/nvngx_dlss.dll $viewer_path/runtimes/win-x64/rtx2/native/
 Write-Output "RTX2 Libraries copied to main Evergine.NGPViewer project."
 
 cmake . -DTCNN_CUDA_ARCHITECTURES=86 -B build
+if (-not $?) {
+	exit $LASTEXITCODE
+}
 cmake --build build --config RelWithDebInfo -j
+if (-not $?) {
+	exit $LASTEXITCODE
+}
 
 conda deactivate
 
