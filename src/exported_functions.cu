@@ -9,9 +9,11 @@
 #include "gl/GL.h"
 #include "gl/GLU.h"
 
+#include <neural-graphics-primitives/common_device.cuh>
+#include <neural-graphics-primitives/common.h>
+#include <neural-graphics-primitives/random_val.cuh>
 #include <neural-graphics-primitives/adam_optimizer.h>
 #include <neural-graphics-primitives/camera_path.h>
-#include <neural-graphics-primitives/common.h>
 #include <neural-graphics-primitives/discrete_distribution.h>
 #include <neural-graphics-primitives/nerf.h>
 #include <neural-graphics-primitives/nerf_loader.h>
@@ -19,11 +21,9 @@
 #include <neural-graphics-primitives/sdf.h>
 #include <neural-graphics-primitives/shared_queue.h>
 #include <neural-graphics-primitives/trainable_buffer.cuh>
-#include <neural-graphics-primitives/testbed.h>
-#include <neural-graphics-primitives/common_device.cuh>
-#include <neural-graphics-primitives/common.h>
 #include <neural-graphics-primitives/render_buffer.h>
 #include <neural-graphics-primitives/tinyexr_wrapper.h>
+#include <neural-graphics-primitives/testbed.h>
 
 #include <tiny-cuda-nn/gpu_memory.h>
 #include <filesystem/path.h>
@@ -41,6 +41,14 @@
 
 using Texture = std::shared_ptr<ngp::GLTexture>;
 using RenderBuffer = std::shared_ptr<ngp::CudaRenderBuffer>;
+using namespace Eigen;
+
+// FIXME por qué hay que redefinirlas?
+inline constexpr float PI() { return 3.14159265358979323846f; }
+inline NGP_HOST_DEVICE Eigen::Vector2f fov_to_focal_length(const Eigen::Vector2i &resolution, const Eigen::Vector2f &degrees)
+{
+	return 0.5f * resolution.cast<float>().cwiseQuotient((0.5f * degrees * (float)PI() / 180).array().tan().matrix());
+}
 
 struct TextureData
 {
@@ -176,7 +184,7 @@ extern "C" void nerf_set_fov(float val)
 	testbed->set_fov(val);
 }
 
-extern "C" void nerf_update_texture(float *camera_matrix, unsigned int handle)
+extern "C" void nerf_update_texture(float *camera_matrix, unsigned int handle, float *fov)
 {
 	if (!testbed)
 		return;
@@ -188,6 +196,26 @@ extern "C" void nerf_update_texture(float *camera_matrix, unsigned int handle)
 	}
 
 	Eigen::Matrix<float, 3, 4> camera{camera_matrix};
+
+	/*********Set fov for view*********/
+	float angleLeft = fov[0];
+	float angleRight = fov[1];
+	float angleUp = fov[2];
+	float angleDown = fov[3];
+
+	// Compute the distance on the image plane (1 unit away from the camera) that an angle of the respective FOV spans
+	Vector2f rel_focal_length_left_down = 0.5f * fov_to_focal_length(Vector2i::Ones(), Vector2f{360.0f * angleLeft / PI(), 360.0f * angleDown / PI()});
+	Vector2f rel_focal_length_right_up = 0.5f * fov_to_focal_length(Vector2i::Ones(), Vector2f{360.0f * angleRight / PI(), 360.0f * angleUp / PI()});
+
+	// Compute total distance (for X and Y) that is spanned on the image plane.
+	testbed->m_relative_focal_length = rel_focal_length_right_up - rel_focal_length_left_down;
+
+	// Compute fraction of that distance that is spanned by the right-up part and set screen center accordingly.
+	Vector2f ratio = rel_focal_length_right_up.cwiseQuotient(testbed->m_relative_focal_length);
+	testbed->m_screen_center = {1.0f - ratio.x(), ratio.y()};
+
+	// Fix up weirdness in the rendering pipeline
+	// // relative_focal_length[(m_fov_axis + 1) % 2] *= (float)view_resolution[(m_fov_axis + 1) % 2] / (float)view_resolution[m_fov_axis];
 
 	RenderBuffer render_buffer = found->second->render_buffer;
 	render_buffer->reset_accumulation();

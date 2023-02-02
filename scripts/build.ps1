@@ -22,7 +22,7 @@ Set-Location $PSScriptRoot/..
 
 conda activate instantngp
 
-cmake . -DTCNN_CUDA_ARCHITECTURES=75 -B build
+cmake . -DTCNN_CUDA_ARCHITECTURES=75 -B build  # comment this line for incremental build (deactivate other arch builds)
 if (-not $?) {
 	exit $LASTEXITCODE
 }
@@ -41,7 +41,7 @@ conda deactivate
 
 conda activate instantngp
 
-cmake . -DTCNN_CUDA_ARCHITECTURES=86 -B build
+cmake . -DTCNN_CUDA_ARCHITECTURES=86 -B build  # comment this line for incremental build (deactivate other arch builds)
 if (-not $?) {
 	exit $LASTEXITCODE
 }
