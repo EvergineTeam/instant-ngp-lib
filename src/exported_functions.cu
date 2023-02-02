@@ -168,6 +168,14 @@ extern "C" unsigned int nerf_create_texture(int width, int height)
 	return handle;
 }
 
+extern "C" void nerf_set_fov(float val)
+{
+	if (!testbed)
+		return;
+
+	testbed->set_fov(val);
+}
+
 extern "C" void nerf_update_texture(float *camera_matrix, unsigned int handle)
 {
 	if (!testbed)
