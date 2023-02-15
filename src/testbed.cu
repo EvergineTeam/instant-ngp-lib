@@ -3710,6 +3710,7 @@ Testbed::Testbed(ETestbedMode mode) {
 		throw std::runtime_error{"Testbed requires CUDA 10.2 or later."};
 	}
 
+/*
 #ifdef NGP_GUI
 	// Ensure we're running on the GPU that'll host our GUI. To do so, try creating a dummy
 	// OpenGL context, figure out the GPU it's running on, and then kill that context again.
@@ -3734,7 +3735,7 @@ Testbed::Testbed(ETestbedMode mode) {
 		glfwTerminate();
 	}
 #endif
-
+*/
 	// Reset our stream, which was allocated on the originally active device,
 	// to make sure it corresponds to the now active device.
 	m_stream = {};

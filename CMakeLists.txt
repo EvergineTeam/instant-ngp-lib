@@ -344,9 +344,6 @@ target_include_directories(ngp_shared PUBLIC ${NGP_INCLUDE_DIRECTORIES})
 target_link_directories(ngp_shared PUBLIC ${NGP_LINK_DIRECTORIES})
 target_link_libraries(ngp_shared PUBLIC ${NGP_LIBRARIES} tiny-cuda-nn)
 
-add_executable(instant-ngp src/main.cu)
-target_link_libraries(instant-ngp PRIVATE ngp)
-
 # Copy DLSS shared libraries
 if (NGP_VULKAN)
 	set(NGX_BUILD_DIR "$<IF:$<CONFIG:Debug>,dev,rel>")

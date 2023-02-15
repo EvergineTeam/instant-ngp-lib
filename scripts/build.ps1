@@ -20,42 +20,37 @@ $currentDir = (Get-Location).Path
 Push-Location $currentDir
 Set-Location $PSScriptRoot/..
 
-conda activate instantngp
+function Build-Shared {
+	param (
+		[Parameter(mandatory = $true)][string]$viewer_path,
+		[Parameter(mandatory = $true)][int]$arch
+	)
 
-cmake . -DTCNN_CUDA_ARCHITECTURES=75 -B build  # comment this line for incremental build (deactivate other arch builds)
-if (-not $?) {
-	exit $LASTEXITCODE
+	$arch_name = ""
+	if ($arch -eq 75) { $arch_name = "rtx2" }
+	elseif ($arch -eq 86) { $arch_name = "rtx3" }
+	elseif ($arch -eq 89) { $arch_name = "rtx4" }
+	else { echo "Architecture $arch not supported"; exit(1) }
+
+	Start-Process -FilePath cmake -ArgumentList (". -DTCNN_CUDA_ARCHITECTURES=$arch -B build") -Wait -NoNewWindow
+	if (-not $?) {
+		exit $LASTEXITCODE
+	}
+	cmake --build build --config RelWithDebInfo -j
+	if (-not $?) {
+		exit $LASTEXITCODE
+	}
+
+	Copy-Item ./build/ngp_shared.dll $viewer_path/Evergine.InstantNGP/runtimes/win-x64/$arch_name/native/
+	Copy-Item ./build/ngp_shared.pdb $viewer_path/Evergine.InstantNGP/runtimes/win-x64/$arch_name/native/
+	Copy-Item ./build/nvngx_dlss.dll $viewer_path/Evergine.InstantNGP/runtimes/win-x64/$arch_name/native/
+
+	$arch_name_upper = $arch_name.ToUpper()
+	Write-Output "$arch_name_upper Libraries copied to main Evergine.NGPViewer project."
 }
-cmake --build build --config RelWithDebInfo -j
-if (-not $?) {
-	exit $LASTEXITCODE
-}
 
-Copy-Item ./build/ngp_shared.dll $viewer_path/runtimes/win-x64/rtx2/native/
-Copy-Item ./build/ngp_shared.pdb $viewer_path/runtimes/win-x64/rtx2/native/
-Copy-Item ./build/nvngx_dlss.dll $viewer_path/runtimes/win-x64/rtx2/native/
-
-Write-Output "RTX2 Libraries copied to main Evergine.NGPViewer project."
-
-conda deactivate
-
-conda activate instantngp
-
-cmake . -DTCNN_CUDA_ARCHITECTURES=86 -B build  # comment this line for incremental build (deactivate other arch builds)
-if (-not $?) {
-	exit $LASTEXITCODE
-}
-cmake --build build --config RelWithDebInfo -j
-if (-not $?) {
-	exit $LASTEXITCODE
-}
-
-Copy-Item ./build/ngp_shared.pdb $viewer_path/runtimes/win-x64/rtx34/native/
-Copy-Item ./build/nvngx_dlss.dll $viewer_path/runtimes/win-x64/rtx34/native/
-Copy-Item ./build/ngp_shared.dll $viewer_path/runtimes/win-x64/rtx34/native/
-
-Write-Output "RTX34 Libraries copied to main Evergine.NGPViewer project."
-
-conda deactivate
+# Build-Shared -viewer_path $viewer_path -arch 75
+Build-Shared -viewer_path $viewer_path -arch 86
+Build-Shared -viewer_path $viewer_path -arch 89
 
 Pop-Location
