@@ -126,20 +126,20 @@ struct CameraPath {
 		return spline(t-floorf(t), get_keyframe(t1-1), get_keyframe(t1), get_keyframe(t1+1), get_keyframe(t1+2));
 	}
 
-	void save(const std::string& filepath_string);
-	void load(const std::string& filepath_string, const Eigen::Matrix<float, 3, 4> &first_xform);
+	void save(const fs::path& path);
+	void load(const fs::path& path, const Eigen::Matrix<float, 3, 4> &first_xform);
 
 #ifdef NGP_GUI
 	ImGuizmo::MODE m_gizmo_mode = ImGuizmo::LOCAL;
 	ImGuizmo::OPERATION m_gizmo_op = ImGuizmo::TRANSLATE;
-	int imgui(char path_filename_buf[128], float frame_milliseconds, Eigen::Matrix<float, 3, 4>& camera, float slice_plane_z, float scale, float fov, float aperture_size, float bounding_radius, const Eigen::Matrix<float, 3, 4>& first_xform, int glow_mode, float glow_y_cutoff);
-	bool imgui_viz(ImDrawList* list, Eigen::Matrix<float, 4, 4>& view2proj, Eigen::Matrix<float, 4, 4>& world2proj, Eigen::Matrix<float, 4, 4>& world2view, Eigen::Vector2f focal, float aspect);
+	int imgui(char path_filename_buf[1024], float frame_milliseconds, Eigen::Matrix<float, 3, 4>& camera, float slice_plane_z, float scale, float fov, float aperture_size, float bounding_radius, const Eigen::Matrix<float, 3, 4>& first_xform, int glow_mode, float glow_y_cutoff);
+	bool imgui_viz(ImDrawList* list, Eigen::Matrix<float, 4, 4>& view2proj, Eigen::Matrix<float, 4, 4>& world2proj, Eigen::Matrix<float, 4, 4>& world2view, Eigen::Vector2f focal, float aspect, float znear, float zfar);
 #endif
 };
 
 #ifdef NGP_GUI
 void add_debug_line(ImDrawList* list, const Eigen::Matrix<float, 4, 4>&proj, Eigen::Vector3f a, Eigen::Vector3f b, uint32_t col = 0xffffffff, float thickness = 1.0f);
-void visualize_unit_cube(ImDrawList* list, const Eigen::Matrix<float, 4, 4>& world2proj, const Eigen::Vector3f& a, const Eigen::Vector3f& b, const Eigen::Matrix3f& render_aabb_to_local);
+void visualize_cube(ImDrawList* list, const Eigen::Matrix<float, 4, 4>& world2proj, const Eigen::Vector3f& a, const Eigen::Vector3f& b, const Eigen::Matrix3f& render_aabb_to_local);
 void visualize_nerf_camera(ImDrawList* list, const Eigen::Matrix<float, 4, 4>& world2proj, const Eigen::Matrix<float, 3, 4>& xform, float aspect, uint32_t col = 0x80ffffff, float thickness = 1.0f);
 #endif
 

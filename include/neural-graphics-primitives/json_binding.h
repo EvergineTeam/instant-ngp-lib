@@ -54,6 +54,36 @@ void from_json(const nlohmann::json& j, Eigen::MatrixBase<Derived>& mat) {
 }
 
 template <typename Derived>
+void to_json(nlohmann::json& j, const Eigen::ArrayBase<Derived>& mat) {
+	for (int row = 0; row < mat.rows(); ++row) {
+		if (mat.cols() == 1) {
+			j.push_back(mat(row));
+		} else {
+			nlohmann::json column = nlohmann::json::array();
+			for (int col = 0; col < mat.cols(); ++col) {
+				column.push_back(mat(row, col));
+			}
+			j.push_back(column);
+		}
+	}
+}
+
+template <typename Derived>
+void from_json(const nlohmann::json& j, Eigen::ArrayBase<Derived>& mat) {
+	for (std::size_t row = 0; row < j.size(); ++row) {
+		const auto& jrow = j.at(row);
+		if (jrow.is_array()) {
+			for (std::size_t col = 0; col < jrow.size(); ++col) {
+				const auto& value = jrow.at(col);
+				mat(row, col) = value.get<typename Eigen::ArrayBase<Derived>::Scalar>();
+			}
+		} else {
+			mat(row) = jrow.get<typename Eigen::ArrayBase<Derived>::Scalar>();
+		}
+	}
+}
+
+template <typename Derived>
 void to_json(nlohmann::json& j, const Eigen::QuaternionBase<Derived>& q) {
 	j.push_back(q.w());
 	j.push_back(q.x());
@@ -166,6 +196,7 @@ inline void to_json(nlohmann::json& j, const NerfDataset& dataset) {
 	j["from_mitsuba"] = dataset.from_mitsuba;
 	j["is_hdr"] = dataset.is_hdr;
 	j["wants_importance_sampling"] = dataset.wants_importance_sampling;
+	j["n_extra_learnable_dims"] = dataset.n_extra_learnable_dims;
 }
 
 inline void from_json(const nlohmann::json& j, NerfDataset& dataset) {
@@ -209,11 +240,14 @@ inline void from_json(const nlohmann::json& j, NerfDataset& dataset) {
 	dataset.aabb_scale = j.at("aabb_scale");
 	dataset.from_mitsuba = j.at("from_mitsuba");
 	dataset.is_hdr = j.value("is_hdr", false);
+
 	if (j.contains("wants_importance_sampling")) {
 		dataset.wants_importance_sampling = j.at("wants_importance_sampling");
 	} else {
 		dataset.wants_importance_sampling = true;
 	}
+
+	dataset.n_extra_learnable_dims = j.value("n_extra_learnable_dims", 0);
 }
 
 NGP_NAMESPACE_END

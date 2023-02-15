@@ -157,6 +157,7 @@ py::array_t<float> Testbed::render_to_cpu(int width, int height, int spp, bool l
 	}
 
 	auto end_cam_matrix = m_smoothed_camera;
+	auto prev_camera_matrix = m_smoothed_camera;
 
 	for (int i = 0; i < spp; ++i) {
 		float start_alpha = ((float)i)/(float)spp * shutter_fraction;
@@ -164,6 +165,9 @@ py::array_t<float> Testbed::render_to_cpu(int width, int height, int spp, bool l
 
 		auto sample_start_cam_matrix = start_cam_matrix;
 		auto sample_end_cam_matrix = log_space_lerp(start_cam_matrix, end_cam_matrix, shutter_fraction);
+		if (i == 0) {
+			prev_camera_matrix = sample_start_cam_matrix;
+		}
 
 		if (path_animation_enabled) {
 			set_camera_from_time(start_time + (end_time-start_time) * (start_alpha + end_alpha) / 2.0f);
@@ -174,7 +178,21 @@ py::array_t<float> Testbed::render_to_cpu(int width, int height, int spp, bool l
 			autofocus();
 		}
 
-		render_frame(sample_start_cam_matrix, sample_end_cam_matrix, Eigen::Vector4f::Zero(), m_windowless_render_surface, !linear);
+		render_frame(
+			m_stream.get(),
+			sample_start_cam_matrix,
+			sample_end_cam_matrix,
+			prev_camera_matrix,
+			m_screen_center,
+			m_relative_focal_length,
+			{0.0f, 0.0f, 0.0f, 1.0f},
+			{},
+			{},
+			m_visualized_dimension,
+			m_windowless_render_surface,
+			!linear
+		);
+		prev_camera_matrix = sample_start_cam_matrix;
 	}
 
 	// For cam smoothing when rendering the next frame.
@@ -187,9 +205,42 @@ py::array_t<float> Testbed::render_to_cpu(int width, int height, int spp, bool l
 	return result;
 }
 
+py::array_t<float> Testbed::view(bool linear, size_t view_idx) const {
+	if (m_views.size() <= view_idx) {
+		throw std::runtime_error{fmt::format("View #{} does not exist.", view_idx)};
+	}
+
+	auto& view = m_views.at(view_idx);
+	auto& render_buffer = *view.render_buffer;
+
+	auto res = render_buffer.out_resolution();
+
+	py::array_t<float> result({res.y(), res.x(), 4});
+	py::buffer_info buf = result.request();
+	float* data = (float*)buf.ptr;
+
+	CUDA_CHECK_THROW(cudaMemcpy2DFromArray(data, res.x() * sizeof(float) * 4, render_buffer.surface_provider().array(), 0, 0, res.x() * sizeof(float) * 4, res.y(), cudaMemcpyDeviceToHost));
+
+	if (linear) {
+		ThreadPool{}.parallel_for<size_t>(0, res.y(), [&](size_t y) {
+			size_t base = y * res.x();
+			size_t base_reverse = (res.y() - y - 1) * res.x();
+			for (uint32_t x = 0; x < res.x(); ++x) {
+				size_t px = base + x;
+				data[px*4+0] = srgb_to_linear(data[px*4+0]);
+				data[px*4+1] = srgb_to_linear(data[px*4+1]);
+				data[px*4+2] = srgb_to_linear(data[px*4+2]);
+			}
+		});
+	}
+
+	return result;
+}
+
 #ifdef NGP_GUI
-py::array_t<float> Testbed::screenshot(bool linear) const {
+py::array_t<float> Testbed::screenshot(bool linear, bool front_buffer) const {
 	std::vector<float> tmp(m_window_res.prod() * 4);
+	glReadBuffer(front_buffer ? GL_FRONT : GL_BACK);
 	glReadPixels(0, 0, m_window_res.x(), m_window_res.y(), GL_RGBA, GL_FLOAT, tmp.data());
 
 	py::array_t<float> result({m_window_res.y(), m_window_res.x(), 4});
@@ -303,6 +354,7 @@ PYBIND11_MODULE(pyngp, m) {
 		.value("FTheta", ELensMode::FTheta)
 		.value("LatLong", ELensMode::LatLong)
 		.value("OpenCVFisheye", ELensMode::OpenCVFisheye)
+		.value("Equirectangular", ELensMode::Equirectangular)
 		.export_values();
 
 	py::class_<BoundingBox>(m, "BoundingBox")
@@ -326,23 +378,33 @@ PYBIND11_MODULE(pyngp, m) {
 		.def_readwrite("max", &BoundingBox::max)
 		;
 
+	py::class_<fs::path>(m, "path")
+		.def(py::init<>())
+		.def(py::init<const std::string&>())
+		;
+
+	py::implicitly_convertible<std::string, fs::path>();
+
 	py::class_<Testbed> testbed(m, "Testbed");
 	testbed
 		.def(py::init<ETestbedMode>(), py::arg("mode") = ETestbedMode::None)
-		.def(py::init<ETestbedMode, const std::string&, const std::string&>())
-		.def(py::init<ETestbedMode, const std::string&, const json&>())
+		.def(py::init<ETestbedMode, const fs::path&, const fs::path&>())
+		.def(py::init<ETestbedMode, const fs::path&, const json&>())
 		.def_readonly("mode", &Testbed::m_testbed_mode)
 		.def("create_empty_nerf_dataset", &Testbed::create_empty_nerf_dataset, "Allocate memory for a nerf dataset with a given size", py::arg("n_images"), py::arg("aabb_scale")=1, py::arg("is_hdr")=false)
 		.def("load_training_data", &Testbed::load_training_data, py::call_guard<py::gil_scoped_release>(), "Load training data from a given path.")
 		.def("clear_training_data", &Testbed::clear_training_data, "Clears training data to free up GPU memory.")
 		// General control
-#ifdef NGP_GUI
-		.def("init_window", &Testbed::init_window, "Init a GLFW window that shows real-time progress and a GUI. 'second_window' creates a second copy of the output in its own window",
+		.def("init_window", &Testbed::init_window, "Init a GLFW window that shows real-time progress and a GUI. 'second_window' creates a second copy of the output in its own window.",
 			py::arg("width"),
 			py::arg("height"),
 			py::arg("hidden") = false,
 			py::arg("second_window") = false
 		)
+		.def("destroy_window", &Testbed::destroy_window, "Destroy the window again.")
+		.def("init_vr", &Testbed::init_vr, "Init rendering to a connected and active VR headset. Requires a window to have been previously created via `init_window`.")
+		.def("view", &Testbed::view, "Outputs the currently displayed image by a given view (0 by default).", py::arg("linear")=true, py::arg("view")=0)
+#ifdef NGP_GUI
 		.def_readwrite("keyboard_event_callback", &Testbed::m_keyboard_event_callback)
 		.def("is_key_pressed", [](py::object& obj, int key) { return ImGui::IsKeyPressed(key); })
 		.def("is_key_down", [](py::object& obj, int key) { return ImGui::IsKeyDown(key); })
@@ -350,7 +412,9 @@ PYBIND11_MODULE(pyngp, m) {
 		.def("is_ctrl_down", [](py::object& obj) { return ImGui::GetIO().KeyMods & ImGuiKeyModFlags_Ctrl; })
 		.def("is_shift_down", [](py::object& obj) { return ImGui::GetIO().KeyMods & ImGuiKeyModFlags_Shift; })
 		.def("is_super_down", [](py::object& obj) { return ImGui::GetIO().KeyMods & ImGuiKeyModFlags_Super; })
-		.def("screenshot", &Testbed::screenshot, "Takes a screenshot of the current window contents.", py::arg("linear")=true)
+		.def("screenshot", &Testbed::screenshot, "Takes a screenshot of the current window contents.", py::arg("linear")=true, py::arg("front_buffer")=true)
+		.def_readwrite("vr_use_hidden_area_mask", &Testbed::m_vr_use_hidden_area_mask)
+		.def_readwrite("vr_use_depth_reproject", &Testbed::m_vr_use_depth_reproject)
 #endif
 		.def("want_repl", &Testbed::want_repl, "returns true if the user clicked the 'I want a repl' button")
 		.def("frame", &Testbed::frame, py::call_guard<py::gil_scoped_release>(), "Process a single frame. Renders if a window was previously created.")
@@ -364,8 +428,7 @@ PYBIND11_MODULE(pyngp, m) {
 			py::arg("fps") = 30.f,
 			py::arg("shutter_fraction") = 1.0f
 		)
-		.def("destroy_window", &Testbed::destroy_window, "Destroy the window again.")
-		.def("train", &Testbed::train, py::call_guard<py::gil_scoped_release>(), "Perform a specified number of training steps.")
+		.def("train", &Testbed::train, py::call_guard<py::gil_scoped_release>(), "Perform a single training step with a specified batch size.")
 		.def("reset", &Testbed::reset_network, py::arg("reset_density_grid") = true, "Reset training.")
 		.def("reset_accumulation", &Testbed::reset_accumulation, "Reset rendering accumulation.",
 			py::arg("due_to_camera_movement") = false,
@@ -385,10 +448,10 @@ PYBIND11_MODULE(pyngp, m) {
 		)
 		.def("n_params", &Testbed::n_params, "Number of trainable parameters")
 		.def("n_encoding_params", &Testbed::n_encoding_params, "Number of trainable parameters in the encoding")
-		.def("save_snapshot", &Testbed::save_snapshot, py::arg("path"), py::arg("include_optimizer_state")=false, "Save a snapshot of the currently trained model")
+		.def("save_snapshot", &Testbed::save_snapshot, py::arg("path"), py::arg("include_optimizer_state")=false, py::arg("compress")=true, "Save a snapshot of the currently trained model. Optionally compressed (only when saving '.ingp' files).")
 		.def("load_snapshot", &Testbed::load_snapshot, py::arg("path"), "Load a previously saved snapshot")
-		.def("load_camera_path", &Testbed::load_camera_path, "Load a camera path", py::arg("path"))
-		.def("load_file", &Testbed::load_file, "Load a file and automatically determine how to handle it. Can be a snapshot, dataset, network config, or camera path.", py::arg("path"))
+		.def("load_camera_path", &Testbed::load_camera_path, py::arg("path"), "Load a camera path")
+		.def("load_file", &Testbed::load_file, py::arg("path"), "Load a file and automatically determine how to handle it. Can be a snapshot, dataset, network config, or camera path.")
 		.def_property("loop_animation", &Testbed::loop_animation, &Testbed::set_loop_animation)
 		.def("compute_and_save_png_slices", &Testbed::compute_and_save_png_slices,
 			py::arg("filename"),
@@ -424,10 +487,12 @@ PYBIND11_MODULE(pyngp, m) {
 		.def_readwrite("dynamic_res_target_fps", &Testbed::m_dynamic_res_target_fps)
 		.def_readwrite("fixed_res_factor", &Testbed::m_fixed_res_factor)
 		.def_readwrite("background_color", &Testbed::m_background_color)
+		.def_readwrite("render_transparency_as_checkerboard", &Testbed::m_render_transparency_as_checkerboard)
 		.def_readwrite("shall_train", &Testbed::m_train)
 		.def_readwrite("shall_train_encoding", &Testbed::m_train_encoding)
 		.def_readwrite("shall_train_network", &Testbed::m_train_network)
 		.def_readwrite("render_groundtruth", &Testbed::m_render_ground_truth)
+		.def_readwrite("render_ground_truth", &Testbed::m_render_ground_truth)
 		.def_readwrite("groundtruth_render_mode", &Testbed::m_ground_truth_render_mode)
 		.def_readwrite("render_mode", &Testbed::m_render_mode)
 		.def_readwrite("render_near_distance", &Testbed::m_render_near_distance)
@@ -485,7 +550,7 @@ PYBIND11_MODULE(pyngp, m) {
 		.def_property("dlss",
 			[](py::object& obj) { return obj.cast<Testbed&>().m_dlss; },
 			[](const py::object& obj, bool value) {
-				if (value && !obj.cast<Testbed&>().m_dlss_supported) {
+				if (value && !obj.cast<Testbed&>().m_dlss_provider) {
 					if (obj.cast<Testbed&>().m_render_window) {
 						throw std::runtime_error{"DLSS not supported."};
 					} else {
@@ -500,6 +565,10 @@ PYBIND11_MODULE(pyngp, m) {
 		.def("crop_box", &Testbed::crop_box, py::arg("nerf_space") = true)
 		.def("set_crop_box", &Testbed::set_crop_box, py::arg("matrix"), py::arg("nerf_space") = true)
 		.def("crop_box_corners", &Testbed::crop_box_corners, py::arg("nerf_space") = true)
+		.def_property("root_dir",
+			[](py::object& obj) { return obj.cast<Testbed&>().root_dir().str(); },
+			[](const py::object& obj, const std::string& value) { obj.cast<Testbed&>().m_root_dir = value; }
+		)
 		;
 
 	py::class_<Lens> lens(m, "Lens");
@@ -546,11 +615,12 @@ PYBIND11_MODULE(pyngp, m) {
 
 	py::class_<TrainingImageMetadata> metadata(m, "TrainingImageMetadata");
 	metadata
-		.def_readwrite("focal_length", &TrainingImageMetadata::focal_length)
 		// Legacy member: lens used to be called "camera_distortion"
 		.def_readwrite("camera_distortion", &TrainingImageMetadata::lens)
 		.def_readwrite("lens", &TrainingImageMetadata::lens)
+		.def_readwrite("resolution", &TrainingImageMetadata::resolution)
 		.def_readwrite("principal_point", &TrainingImageMetadata::principal_point)
+		.def_readwrite("focal_length", &TrainingImageMetadata::focal_length)
 		.def_readwrite("rolling_shutter", &TrainingImageMetadata::rolling_shutter)
 		.def_readwrite("light_dir", &TrainingImageMetadata::light_dir)
 		;
@@ -651,7 +721,6 @@ PYBIND11_MODULE(pyngp, m) {
 	image
 		.def_readonly("training", &Testbed::Image::training)
 		.def_readwrite("random_mode", &Testbed::Image::random_mode)
-		.def_readwrite("pos", &Testbed::Image::pos)
 		;
 
 	py::class_<Testbed::Image::Training>(image, "Training")
